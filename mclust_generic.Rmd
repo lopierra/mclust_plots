@@ -1,0 +1,176 @@
+---
+title: "plotting mclust results"
+output: html_notebook
+---
+
+mclust density plots don't seem to do what I need (i.e. plot each cluster overlaid on the original data), so here is a script to tidy the data and produce a couple of visualizations.
+
+
+```{r}
+library(mclust)
+library(ggplot2)
+library(tidyverse)
+library(viridis)
+library(ggridges)
+```
+
+
+```{r}
+
+## Read in data - 276,966 patient results from a single lab test
+
+# can be obtained from raw data using: 
+  # original_lab_data <- data.frame(Heme$LabTestNumericResult)
+  # write.csv(original_lab_data, "original_lab_data.csv", row.names=FALSE)
+
+original_lab_data <- read.csv("original_lab_data.csv")
+
+```
+
+
+```{r}
+
+## Make a frequency table of possible lab values and their observed frequency of cases
+
+# first create data frame of observed frequencies
+
+observed_lab_freqs <- data.frame(count(original_lab_data, LabTestNumericResult))
+
+# not every possible value of this lab test was observed in this population -> need to fill in 0 for the missing values in the observed range (min = 2.3, max = 20)
+
+every_possible_lab_value <- data.frame(LabTestNumericResult = seq(2.3, 20, 0.1))
+
+# convert LabTestNumericResult to characters so left join will work (not sure why it doesn't work with numeric??)
+
+observed_lab_freqs$LabTestNumericResult <- as.character(observed_lab_freqs$LabTestNumericResult)
+every_possible_lab_value$LabTestNumericResult <- as.character(every_possible_lab_value$LabTestNumericResult)
+
+# join and replace NAs with 0, change LabTestNumericResult back to numeric, rename count column ("n") to observed_cases
+
+freq_table <- left_join(every_possible_lab_value, observed_lab_freqs) %>% replace(is.na(.),0)
+freq_table$LabTestNumericResult <- as.numeric(freq_table$LabTestNumericResult)
+colnames(freq_table)[2] <- "observed_cases"
+
+# check total observed cases = 276966
+
+total_observed_cases <- sum(freq_table$observed_cases)
+
+```
+
+### May need to upload Heme data for mclust instead of just frequencies
+
+```{r}
+
+## run mclust on the data
+
+mclust_result <- Mclust(original_lab_data)
+
+```
+
+
+```{r}
+
+## Collect the mclust results (mean, sd, weight of each cluster) into a dataframe
+
+# separate means and sd of clusters into vectors
+
+mclust_means <- mclust_result$parameters$mean
+mclust_sd <- sqrt( mclust_result$parameters$variance$sigmasq)
+mclust_weights <- mclust_result$parameters$pro
+
+# make into dataframe
+
+clusters_meansd <- data.frame(mean = mclust_means, sd = mclust_sd, weights = mclust_weights) %>%
+  rowid_to_column(var = "cluster_id")
+
+```
+
+
+```{r}
+## populate frequency table with predicted frequencies for each cluster, using parameters from cluster_meansd table
+
+for(i in 1:9){
+
+mean <- clusters_meansd[i,2]
+sd <- clusters_meansd[i,3]
+weight <- clusters_meansd[i,4]
+
+colname <- paste0("cluster_",i)
+
+freq_table[[colname]] <- as.integer(weight * total_observed_cases * pnorm(freq_table$LabTestNumericResult, mean = mean, sd = sd))
+
+# pnorm gives cumulative frequencies - need to subtract each row from previous to get noncumulative distribution
+
+freq_table[[colname]] <- c(freq_table[[colname]][1], diff(freq_table[[colname]], lag = 1))
+
+}
+
+```
+
+
+```{r}
+
+## Add a sum column so the observed data can be compared to the sum of the predicted data
+
+# add sum of clusters
+
+freq_table_sum <- freq_table %>%
+  mutate(cluster_sum = rowSums(.[3:11]))
+
+#check that sum = 276966 (or close since values were rounded with as.integer)
+
+sum(freq_table_sum$cluster_sum)
+
+# reshape data into tidy format for ggplot
+
+freq_table_tidy <- freq_table_sum %>%
+  gather(2:12, key = "cluster", value = "frequency")
+
+
+```
+
+
+```{r}
+
+## plot with ggplot and viridis palette
+
+cluster_plot <- ggplot(freq_table_tidy, aes(x = LabTestNumericResult, 
+                                            y = frequency, 
+                                            color = cluster)) +
+  geom_line() +
+  scale_color_viridis(discrete = TRUE) +
+  xlab("Lab value") +
+  ylab("Number of cases") +
+  ggtitle("Observed lab results overlaid with mclust subgroups and total predicted data")
+
+print(cluster_plot)
+
+ggsave("mclust_plot.png", cluster_plot, width=9, height=6)
+
+```
+
+
+```{r}
+
+## plot with ggridges
+
+ridge_plot <- ggplot(freq_table_tidy, aes(x = LabTestNumericResult, 
+                                          y = cluster, 
+                                          fill = cluster, 
+                                          height = frequency)) +
+  geom_density_ridges(stat = "identity", 
+                      show.legend = FALSE) +
+  scale_fill_viridis(discrete = TRUE) +
+  xlim(0,15) +
+  xlab("Lab value") +
+  ylab(NULL) +
+  ggtitle("Ridge plot of observed data, mclust subgroups, and total predicted data")
+
+print(ridge_plot)
+
+ggsave("mclust_ridge_plot.png", ridge_plot, width=9, height=6)
+
+```
+
+
+
