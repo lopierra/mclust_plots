@@ -1,2 +1,4 @@
 # mclust_plots
-Make density and ridge plots using mclust results
+Make density and ridge plots of mclust subgroups, overlaid on observed data.
+
+Name of actual lab test was changed to "lab test" for confidentiality.
